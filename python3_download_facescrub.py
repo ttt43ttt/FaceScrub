@@ -74,7 +74,8 @@ from requests import RequestException
 import concurrent.futures
 
 # Visit website and copy user agent string as single line https://www.whatismybrowser.com/detect/what-is-my-user-agent
-MY_USER_AGENT_STRING="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Ubuntu Chromium/47.0.2526.106 Chrome/47.0.2526.106 Safari/537.36"
+MY_USER_AGENT_STRING="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.130 Safari/537.36"
+# MY_USER_AGENT_STRING=""
 
 session = None
 
@@ -157,7 +158,7 @@ def download_image(counter, url, sha256, timeout):
     logger = logging.getLogger("logger")
     try:
         headers = generate_headers(url)
-        response = session.get(url, headers=headers, timeout=timeout)
+        response = session.get(url, headers=headers, timeout=timeout, verify=False)
 
         if response.status_code != requests.codes.OK:  # Status 200
             response.raise_for_status()
@@ -168,6 +169,8 @@ def download_image(counter, url, sha256, timeout):
             content_type = magic.from_buffer(response.content, mime=True)
         else:
             content_type = response.headers["content-type"]  # Sometimes this is missing, raising KeyError
+            if content_type == '' or content_type == 'application/octet-stream':
+                content_type, encoding = mimetypes.guess_type(url)
 
         if (content_type is None) or not content_type.startswith("image"):
             logger.error("Line {number}: Invalid content-type {content_type}: {url}".format(number=counter,
@@ -254,9 +257,16 @@ def save_image(counter, url, response, datasetpath, name, image_id, face_id, bbo
 
     # Cannot determine filetype.
     if filetype is None and not has_magic_lib:
-        os.remove(outpath)
-        logger.error("Line {number}: Cannot determine file type: {url}".format(number=counter, url=url))
-        return False
+        mimetype, encoding = mimetypes.guess_type(url)
+        ext = mimetypes.guess_extension(mimetype)
+        if ext is None:
+            os.remove(outpath)
+            logger.error("Line {number}: Cannot determine file type: {url}".format(number=counter, url=url))
+            return False
+        else:
+            filetype = ext.lstrip('.')
+            if filetype == "jpe":
+                filetype = "jpeg"
 
     # Get filetype using lib magic
     elif filetype is None and has_magic_lib:
@@ -345,6 +355,24 @@ def main():
 
     def _f(counter, line, args):
         name, image_id, face_id, url, bbox, sha256 = parse_line(line)
+
+        def isFaceExisting():
+            try:
+                nonlocal name
+                name = name.replace(' ', '_')
+                output_dir = os.path.join(args.datasetpath, "faces", name)
+                filename = "{name}_{image_id}_{face_id}".format(name=name, image_id=image_id, face_id=face_id)
+                outpath = os.path.join(output_dir, filename)
+                logger.info(outpath)
+                return os.path.exists(outpath + ".jpeg") or os.path.exists(outpath + ".png")
+            except Exception as e:
+                logger.error(e)
+                return False
+
+        if isFaceExisting():
+            # face already downloaded
+            return
+
         logger.info("Processing line {}: {}".format(counter, url))
         response = download_image(counter, url, sha256, args.timeout)
         if response:
